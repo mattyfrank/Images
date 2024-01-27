@@ -1,0 +1,232 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "imageTemplateName": {
+        "type": "string"
+        },
+        "api-version": {
+          "type": "string",
+          "allowedValues":[
+              "2020-02-14",
+              "2021-10-01"
+          ],
+          "defaultValue":"2021-10-01"
+        },
+        "env": {
+            "type": "string",
+            "allowedValues": [
+                "nonprod",
+                "prod"
+            ],
+            "defaultValue": "nonprod"
+        },
+        "location": {
+            "type": "string",
+            "defaultValue":"[resourceGroup().location]"
+        },
+        "ImagePublisher": {
+            "type": "string",
+            "allowedValues": [
+                "MicrosoftWindowsDesktop",
+                "MicrosoftWindowsServer"
+            ],
+            "defaultValue": "MicrosoftWindowsDesktop"
+        },
+        "ImageOffer": {
+            "type": "string",
+            "allowedValues": [
+                "windows-10",
+                "windows-11",
+                "WindowsServer"
+            ],
+            "defaultValue": "windows-10"
+        },
+        "ImageSKU": {
+            "type": "string",
+            "allowedValues": [
+                "win10-22h2-avd-g2",
+                "win10-22h2-ent", 
+                "win11-22h2-avd",
+                "win11-22h2-ent",
+                "2019-datacenter",
+                "2022-datacenter"
+            ],
+            "defaultValue": "win10-22h2-avd-g2"
+        },
+        "subnetId": {
+            "type": "string"
+        },
+        "userAssignedIdentities": {
+            "type": "string"
+        },
+        "galleryImageId": {
+            "type": "string"
+        }
+    },
+    "variables": {
+        "bloburi": "[concat('https://storavd', toLower(parameters('env')), '.blob.core.windows.net/images-content')]",
+        "scripts": "[concat('https://storavd', toLower(parameters('env')), '.blob.core.windows.net/deployment-scripts')]"
+    },
+    "resources": [
+      {
+        "type": "Microsoft.VirtualMachineImages/imageTemplates",
+        "apiVersion": "[parameters('api-version')]",
+        "name": "[parameters('imageTemplateName')]",
+        "location": "[parameters('location')]",
+        "dependsOn": [],
+        "tags": {
+            "imagebuilderTemplate": "AzureImageBuilderGAL",
+            "userIdentity": "enabled"
+        },
+        "identity": {
+            "type": "UserAssigned",
+            "userAssignedIdentities": {
+                "[parameters('userAssignedIdentities')]": {}             
+            }
+        },
+        "properties": {
+            "buildTimeoutInMinutes" : 100,
+            "vmProfile": {
+                "vmSize": "Standard_D2s_v4",
+                "osDiskSizeGB": 0,
+                "vnetConfig": {
+                    "subnetId": "[parameters('subnetId')]"
+                }
+            },
+            "source": {
+                "type": "PlatformImage",
+                "publisher": "[parameters('imagePublisher')]",
+                "offer": "[parameters('imageOffer')]", 
+                "sku": "[parameters('ImageSKU')]", 
+                "version": "latest"    
+            },
+            "customize": [
+                {
+                    "type": "PowerShell",
+                    "name": "CreateBuildPath",
+                    "scriptUri": "https://raw.githubusercontent.com/danielsollondon/azvmimagebuilder/master/testPsScript.ps1"
+                },
+                // Create folders
+                {
+                    "type": "PowerShell",
+                    "name": "settingUpMgmtAgtPath",
+                    "inline": [
+                        "mkdir C:\\Logs\\buildActions",
+                        "mkdir C:\\Temp",
+                        "mkdir C:\\RunAs",
+                        "echo Azure-Image-Builder-Was-Here  > C:\\Logs\\buildActions\\buildActionsOutput.txt"
+                    ]
+                },
+                // Download CMSetup.msi to C:\Temp
+                {
+                    "type": "File",
+                    "name": "downloadCCMsetup",
+                    "sourceUri": "[concat(variables('bloburi'), '/ccmsetup.msi')]",
+                    "destination":"C:\\Temp\\ccmsetup.msi"
+                },
+                // Download CMbootstrap.ps1 to C:\Temp
+                {
+                    "type": "File",
+                    "name": "downloadCMscript",
+                    "sourceUri": "[concat(variables('scripts'), '/cmbootstrap.ps1')]",
+                    "destination":"C:\\Temp\\cmbootstrap.ps1"
+                },
+                // Download RunAs.zip to C:\Temp
+                {
+                    "type": "File",
+                    "name": "downloadRunAs",
+                    "sourceUri": "[concat(variables('bloburi'), '/RunAs.zip')]",
+                    "destination":"C:\\RunAs\\RunAs.zip"
+                },
+                // Download VDOT to C:\Temp
+                {
+                    "type": "File",
+                    "name": "downloadOptimizer",
+                    "sourceUri": "[concat(variables('bloburi'),'/Virtual-Desktop-Optimization-Tool-22H2.zip')]",
+                    //"sourceUri": "https://github.com/The-Virtual-Desktop-Team/Virtual-Desktop-Optimization-Tool/archive/refs/heads/main.zip",
+                    "destination":"C:\\Temp\\Virtual-Desktop-Optimization-Tool.zip"
+                },
+                // Expand RunAs.zip & Delete RunAs.Zip 
+                {
+                    "type": "PowerShell",
+                    "name": "ExpandRunAs",
+                    "inline": [
+                        "Expand-Archive -LiteralPath \"C:\\RunAs\\RunAs.zip\" -DestinationPath C:\\RunAs",
+                        "sleep -s 20",
+                        "del \"C:\\RunAs\\RunAs.zip\""
+                    ]
+                },
+                // Expand VDOT zip & Delete zip
+                {
+                    "type": "PowerShell",
+                    "name": "ExpandOptimizer",
+                    "inline": [
+                        "Expand-Archive -LiteralPath \"C:\\Temp\\Virtual-Desktop-Optimization-Tool.zip\" -DestinationPath C:\\Temp",
+                        "sleep -s 20",
+                        "del \"C:\\Temp\\Virtual-Desktop-Optimization-Tool.zip\""
+                    ]
+                },
+                // Install Windows Updates
+                {
+                    "type": "WindowsUpdate",
+                    "searchCriteria": "IsInstalled=0",
+                    "updateLimit": 40,
+                    "filters": [
+                        "exclude:$_.Title -like '*Preview*'",
+                        "include:$true"
+                    ]
+                },
+                // Restart Windows
+                {
+                    "type": "WindowsRestart",
+                    "restartCheckCommand": "echo Azure-Image-Builder-Restarted-the-VM  >> C:\\Logs\\buildActions\\buildActionsOutput.txt",
+                    "restartTimeout": "5m"
+                },
+                // Run VDOT to optimize image
+                {
+                    "type": "PowerShell",
+                    "name": "optImage",
+                    "inline": [
+                        "C:\\Temp\\Virtual-Desktop-Optimization-Tool-22H2\\Windows_VDOT.ps1 -AcceptEula -Optimizations All -WindowsVersion 22H2 -Verbose"
+                    ],
+                    "validExitCodes": [
+                        0
+                    ],
+                    "runElevated": true,
+                    "runAsSystem": true
+                },
+// Restart Windows
+                {
+                    "type": "WindowsRestart",
+                    "restartCheckCommand": "echo Azure-Image-Builder-Restarted-the-VM  >> C:\\Logs\\buildActions\\buildActionsOutput.txt",
+                    "restartTimeout": "5m"
+                },
+                // Delete VDOT and C:\buildArtifacts
+                {
+                    "type": "PowerShell",
+                    "name": "delArtifacts",
+                    "inline": [
+                        "Remove-Item -Path C:\\Temp\\Virtual-Desktop-Optimization-Tool-22H2 -Recurse",
+                        //"Remove-Item -Path C:\\Temp\\Virtual-Desktop-Optimization-Tool-main -Recurse",
+                        "Remove-Item -Path C:\\buildArtifacts -Recurse",
+                        "Remove-Item -Path C:\\Logs\\ -Recurse"
+                    ]
+                }
+            ],
+            "distribute": [
+                {   
+                    "type": "SharedImage",
+                    "galleryImageId": "[parameters('galleryImageId')]",
+                    "runOutputName": "winclientR01",
+                    "artifactTags": {
+                        "source": "azureVmImageBuilder",
+                        "baseosimg": "[parameters('ImageSKU')]"
+                    },
+                    "replicationRegions": ["westus2"]
+                }
+           ]
+        }
+      }
+    ]
+}
